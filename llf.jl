@@ -2,7 +2,7 @@
 function impyramid(A; sizes="downsampled")
   a = 0.375
   kernel = [1/4 - a/2, 1/4, a, 1/4, 1/4 - a/2]
-  B = imfilter(imfilter(A,kernel), kernel')
+  B = imfilter(imfilter(A,kernel), kernel') # slowest part of impyramid, by far
 
   if (sizes == "downsampled")
     return (B[1:2:end, 1:2:end])
@@ -58,15 +58,15 @@ function reconstruct(L)
   return im
 end
 
-function remap(subimage, sigma_r, g_0, f_d, f_e)
+function remap(subimage, sigma_r, g_0, alpha, beta)
   for i = 1:size(subimage)[1]
     for j = 1:size(subimage)[2]
       pv = subimage[i,j]
 
       if abs(pv - g_0) < sigma_r
-        pv = g_0 + sign(pv - g_0)*sigma_r*f_d(abs(pv-g_0)/sigma_r)
+        pv = g_0 + sign(pv - g_0)*sigma_r*(abs(pv-g_0)/sigma_r)^alpha
       else
-        pv = g_0 + sign(pv - g_0)*(f_e(abs(pv-g_0) - sigma_r) + sigma_r)
+        pv = g_0 + sign(pv - g_0)*(beta*(abs(pv-g_0) - sigma_r) + sigma_r)
       end
 
       subimage[i,j] = pv
@@ -76,30 +76,14 @@ function remap(subimage, sigma_r, g_0, f_d, f_e)
   return subimage
 end
 
-function generate_powercurve(alpha)
-  function powercurve(i)
-    return i^alpha
-  end
-
-  return powercurve
-end
-
-function generate_tonemapping(beta)
-  function tonemapping(i)
-    return i*beta
-  end
-
-  return tonemapping
-end
-
-function locallaplacianfilter(I, sigma_r; levels=5)
+function locallaplacianfilter(I; sigma_r=0.1, levels=5, alpha=0.1, beta=1)
   G = gaussianpyramid(I, levels)
   Loutput = lappyramid(I, levels)
 
   for n = 1:levels
     for i = 1:size(G[n])[1]
       for j = 1:size(G[n])[2]
-        print("Current index: ")
+        print("Current index: ") # printing is kind of slow
         println((n,i,j))
         g_0 = G[n][i,j]
 
@@ -107,13 +91,50 @@ function locallaplacianfilter(I, sigma_r; levels=5)
         R = copy(I)
 
         # remap subregion
-        Rtilde = remap(R, sigma_r, g_0, generate_powercurve(0.1), generate_tonemapping(1))
+        Rtilde = remap(R, sigma_r, g_0, alpha, beta)
 
         # generate laplacian pyramid of remapped region
         Ltilde = lappyramid(Rtilde, n)
 
         #update output laplacian pyramid
         Loutput[n][i,j] = Ltilde[n][i,j]
+      end
+    end
+  end
+
+  return reconstruct(Loutput)
+end
+
+function fastlocallaplacianfilter(I; sigma_r=0.1, levels=5, alpha=0.1, beta=1)
+  G = gaussianpyramid(I, levels)
+  Loutput = lappyramid(I, levels)
+  pyramid_stack = ()
+
+  # this should be set by looking at the spectrum of the remapping function. this is good enough, though.
+  spacing = 0.01
+
+  println("Pregenerating pyramid stack")
+  for g = 0:spacing:1
+    pyramid_stack = tuple(pyramid_stack..., lappyramid(remap(copy(I), sigma_r, g, alpha, beta), levels))
+  end
+
+  println("Starting pyramid rebuild")
+  for n = 1:levels
+    for i = 1:size(G[n])[1]
+      for j = 1:size(G[n])[2]
+        g_0 = G[n][i,j]
+
+        #update output laplacian pyramid
+        i1 = floor(g_0/spacing) + 1
+        i2 = i1 + 1
+        if (i2 >= (1/spacing + 1))
+          i1 -= 1
+          i2 -= 1
+        end
+
+        alpha = (g_0 - (i1-1)*spacing)/spacing
+
+        Loutput[n][i,j] = pyramid_stack[i1][n][i,j] * alpha + pyramid_stack[i2][n][i,j] * (1 - alpha)
       end
     end
   end
